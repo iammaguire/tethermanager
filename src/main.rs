@@ -1,49 +1,21 @@
 extern crate libusb;
 extern crate eventual;
+extern crate notify_rust;
 use eventual::Timer;
+use notify_rust::Notification;
 use std::sync::mpsc::Sender;
 use std::process::Command;
 use std::thread;
 
 fn start_openvpn() {
-    Command::new("adb")
-        .arg("forward")
-        .arg("tcp:41927")
-        .arg("tcp:41927")
-        .spawn();
-    Command::new("openvpn")
-        .arg("--ping")
-        .arg("10")
-        .arg("--ping-restart")
-        .arg("30")
-        .arg("--route")
-        .arg("0.0.0.0")
-        .arg("128.0.0.0")
-        .arg("--route")
-        .arg("128.0.0.0")
-        .arg("128.0.0.0")
-        .arg("--socket-flags")
-        .arg("TCP_NODELAY")
-        .arg("--dhcp-option")
-        .arg("DNS")
-        .arg("192.168.56.1")
-        .arg("--proto")
-        .arg("tcp-client")
-        .arg("--ifconfig")
-        .arg("192.168.56.2")
-        .arg("192.168.56.1")
-        .arg("--remote")
-        .arg("127.0.0.1")
-        .arg("41927")
-        .arg("tcp-client")
-        .arg("--dev")
-        .arg("tun0")
-        .spawn();
+    Command::new("gksu")
+        .arg("/home/meet/.config/android_tether/start_ovpn.sh")
+        .spawn()
+        .expect("Failed to start OpenVPN");
 }
 
-fn kill_openvpn() -> bool {
-    let cmd = Command::new("pkill").arg("openvpn").output().expect("Failed to kill OpenVPN");
-    cmd.status.success()
+fn kill_openvpn() {
+    let cmd = Command::new("gksu").arg("pkill openvpn").spawn().expect("Failed to kill OpenVPN");
 }
 
 fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id: u16, phone_product_id_hid: u16) {
@@ -51,14 +23,31 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
     let ticks = timer.interval_ms(1000).iter();
     let mut phone_unplugged = true;
     let mut openvpn_killed = true;
+    let mut cur_hid = 0;
 
     for _ in ticks {
         for mut device in context.devices().unwrap().iter() {
             let device_desc = device.device_descriptor().unwrap();
             if device_desc.vendor_id() == phone_vendor_id && (device_desc.product_id() == phone_product_id_hid || device_desc.product_id() == phone_product_id) { // phone is plugged in
-                if openvpn_killed {
+                if cur_hid == 0 {
+                    cur_hid = device_desc.product_id();
+                } else {
+                    if cur_hid != device_desc.product_id() {
+                        kill_openvpn();
+                        start_openvpn();
+                        cur_hid = device_desc.product_id();
+                    }
+                }
+
+                println!("Found phone!");
+                if openvpn_killed{
                     start_openvpn();
                     println!("Started OpenVPN.");
+                    Notification::new()
+                        .summary("Started OpenVPN")
+                        .body("I just started OpenVPN for you.")
+                        .icon("firefox")
+                        .show().unwrap();
                     openvpn_killed = false;
                 }
                 
@@ -68,10 +57,11 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
                 phone_unplugged = true;
             }
         }
+        println!("Phone unplugged: {}", phone_unplugged);
 
         if phone_unplugged && !openvpn_killed {
-            openvpn_killed = kill_openvpn();
-            println!("Phone unplugged. Killed OpenVPN: {}", openvpn_killed);
+            kill_openvpn();
+            openvpn_killed = true;
         }
     }
 }
