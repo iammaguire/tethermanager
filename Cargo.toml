@@ -1,0 +1,9 @@
+[package]
+name = "tethermanager"
+version = "0.1.0"
+authors = ["cmatri <cperkin4@gmu.edu>"]
+edition = "2018"
+
+[dependencies]
+libusb = "0.3.0"
+eventual = "0.1.7"
