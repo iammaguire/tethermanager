@@ -1,15 +1,24 @@
 extern crate libusb;
-extern crate eventual;
 extern crate notify_rust;
-use eventual::Timer;
+extern crate psutil;
+
+pub mod online;
+
 use notify_rust::Notification;
-use std::sync::mpsc::Sender;
+use psutil::process;
+use online::*;
 use std::process::Command;
 use std::time::Duration;
 use std::thread;
 
 static PHONE_CONNECTED: &'static str = "smartphonetrusted";
 static PHONE_DISCONNECTED: &'static str = "smartphonedisconnected";
+
+enum OpenVPNState {
+    CONNECTED,
+    RECONNECTING,
+    DEAD
+}
 
 fn sleep(dur: u64) {
     thread::sleep(Duration::from_millis(dur));
@@ -31,6 +40,10 @@ fn start_openvpn() {
         .arg("/home/meet/.config/android_tether/start_ovpn.sh")
         .spawn()
         .expect("Failed to start OpenVPN");
+    sleep(1000);
+    if let Ok(online) = online(None) {
+        if online { show_notification("Initiated tether", PHONE_CONNECTED, 0) };
+    }
 }
 
 fn kill_openvpn() {
@@ -38,33 +51,52 @@ fn kill_openvpn() {
         .arg("/home/meet/.config/android_tether/end_ovpn.sh")
         .spawn()
         .expect("Failed to start OpenVPN");
+    sleep(1000);
+    if !openvpn_running() {
+        show_notification("Severed tether", PHONE_DISCONNECTED, 0);
+    }
+}
+
+fn restart_openvpn() {
+    kill_openvpn();
+    start_openvpn();
+}
+
+fn openvpn_running() -> bool {
+    if let Ok(processes) = process::all() {
+        for p in &processes {
+            if p.comm == "openvpn" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id: u16, phone_product_id_hid: u16) {
-    let timer = Timer::new();
-    let ticks = timer.interval_ms(1000).iter();
     let mut phone_unplugged = true;
-    let mut openvpn_killed = true;
     let mut cur_hid = 0;
-
-    for _ in ticks {
+    
+    if openvpn_running() {
+        kill_openvpn();
+    }
+    
+    loop {
+        let mut openvpn_killed = !openvpn_running();
         for mut device in context.devices().unwrap().iter() {
             let device_desc = device.device_descriptor().unwrap();
             if device_desc.vendor_id() == phone_vendor_id && (device_desc.product_id() == phone_product_id_hid || device_desc.product_id() == phone_product_id) { // phone is plugged in
                 if cur_hid == 0 {
                     cur_hid = device_desc.product_id();
                 } else {
-                    if cur_hid != device_desc.product_id() {
-                        kill_openvpn();
-                        sleep(6000);
-                        start_openvpn();
+                    if cur_hid != device_desc.product_id() && !openvpn_killed {
+                        restart_openvpn();
                         cur_hid = device_desc.product_id();
                     }
                 }
 
                 if openvpn_killed {
                     start_openvpn();
-                    show_notification("Initiated tether", PHONE_CONNECTED, 0);
                     openvpn_killed = false;
                 }
                 
@@ -77,9 +109,14 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
 
         if phone_unplugged && !openvpn_killed {
             kill_openvpn();
-            show_notification("Severed tether", PHONE_DISCONNECTED, 0);
             openvpn_killed = true;
         }
+
+        if !phone_unplugged && !openvpn_killed && !online(None).unwrap() {
+            restart_openvpn();
+        }
+
+        sleep(1000);
     }
 }
 
