@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use simple_error::SimpleError;
 
-const DEFAULT_TIMEOUT: u64 = 3;
+const DEFAULT_TIMEOUT: u64 = 1;
 
 fn connect(addr: &SocketAddr, timeout: Option<Duration>) -> Result<bool, SimpleError> {
     let duration = match timeout {

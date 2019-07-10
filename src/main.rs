@@ -16,23 +16,22 @@ use std::{process::Command, time::Duration, error::Error, thread};
 static PHONE_CONNECTED: &'static str = "smartphonetrusted";
 static PHONE_DISCONNECTED: &'static str = "smartphonedisconnected";
 
-enum OpenVPNState {
-    CONNECTED,
-    RECONNECTING,
-    DEAD
-}
-
 fn sleep(dur: u64) {
     thread::sleep(Duration::from_millis(dur));
 }
 
-fn show_notification(msg: &'static str, icon: &'static str, delay: u64) {
+fn show_notification(msg: &'static str) {
     thread::spawn(move || {
-        sleep(delay);
         Notification::new()
             .summary("Tether Manager")
             .body(msg)
-            .icon(icon)
+            .icon(match online(None) {
+                Ok(t) => match t {
+                    true => PHONE_CONNECTED,
+                    false => PHONE_DISCONNECTED
+                },
+                Err(_) => PHONE_DISCONNECTED
+            })
             .show().unwrap();
     });         
 }
@@ -43,9 +42,6 @@ fn start_openvpn() {
         .spawn()
         .expect("Failed to start OpenVPN");
     sleep(1000);
-    if let Ok(online) = online(None) {
-        if online { show_notification("Initiated tether", PHONE_CONNECTED, 0) };
-    }
 }
 
 fn kill_openvpn() {
@@ -54,9 +50,6 @@ fn kill_openvpn() {
         .spawn()
         .expect("Failed to start OpenVPN");
     sleep(1000);
-    if !openvpn_running() {
-        show_notification("Severed tether", PHONE_DISCONNECTED, 0);
-    }
 }
 
 fn restart_openvpn() {
@@ -91,12 +84,18 @@ fn signal_hook() -> Result<(Receiver<()>, Receiver<()>), Box<Error>> {
     Ok((receiver_restart, receiver_toggle))
 }
 
+fn online_notification(timeout_millis: u64) {
+    if online(Some(Duration::from_millis(timeout_millis))).unwrap() { 
+        show_notification("Connected");
+    }
+}
+
 fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id: u16, phone_product_id_hid: u16) -> Result<(), Box<Error>> {
     let mut phone_unplugged = true;
     let mut cur_hid = 0;
     let mut paused = false;
     let (restart_event, toggle_event) = signal_hook()?;
-    let ticks = tick(Duration::from_secs(1));
+    let ticks = tick(Duration::from_secs(4));
 
     if openvpn_running() {
         kill_openvpn();
@@ -106,17 +105,20 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
         select! {
             recv(restart_event) -> _ => {
                 if !paused {
+                    show_notification("Restarting OpenVPN");
                     restart_openvpn();
+                    online_notification(1000);
                 }
             }
             recv(toggle_event) -> _ => {
                 paused = !paused;
                 if paused {
                     kill_openvpn();
-                    show_notification("Stopped monitoring tether", PHONE_DISCONNECTED, 0);
+                    show_notification("Pausing");
                 } else {
-                    show_notification("Continued monitoring tether", PHONE_CONNECTED, 0);
+                    show_notification("Resuming");
                     start_openvpn();
+                    online_notification(1000);
                 }
             }
             recv(ticks) -> _ => {
@@ -128,7 +130,7 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
                             if cur_hid == 0 {
                                 cur_hid = device_desc.product_id();
                             } else {
-                                if cur_hid != device_desc.product_id() && !openvpn_killed {
+                                if cur_hid != device_desc.product_id() && !openvpn_killed { // handle case where user allows sharing data with pc
                                     restart_openvpn();
                                     cur_hid = device_desc.product_id();
                                 }
@@ -137,6 +139,7 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
                             if openvpn_killed {
                                 start_openvpn();
                                 openvpn_killed = false;
+                                online_notification(10000)
                             }
                             
                             phone_unplugged = false;
@@ -148,11 +151,13 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
 
                     if phone_unplugged && !openvpn_killed {
                         kill_openvpn();
+                        show_notification("Disconnected");
                         openvpn_killed = true;
                     }
 
                     if !phone_unplugged && !openvpn_killed && !online(None).unwrap() {
                         restart_openvpn();
+                        show_notification("Reconnected");
                     }
                 }
             }
