@@ -95,13 +95,15 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
     let mut cur_hid = 0;
     let mut paused = false;
     let (restart_event, toggle_event) = signal_hook()?;
-    let ticks = tick(Duration::from_secs(4));
+    let update_ticks = tick(Duration::from_secs(4));
+    let online_check_ticks = tick(Duration::from_secs(20));
 
     if openvpn_running() {
         kill_openvpn();
     }
     
     loop {
+        let mut openvpn_killed = !openvpn_running();
         select! {
             recv(restart_event) -> _ => {
                 if !paused {
@@ -121,9 +123,8 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
                     online_notification(1000);
                 }
             }
-            recv(ticks) -> _ => {
+            recv(update_ticks) -> _ => {
                 if !paused {
-                    let mut openvpn_killed = !openvpn_running();
                     for mut device in context.devices().unwrap().iter() {
                         let device_desc = device.device_descriptor().unwrap();
                         if device_desc.vendor_id() == phone_vendor_id && (device_desc.product_id() == phone_product_id_hid || device_desc.product_id() == phone_product_id) { // phone is plugged in
@@ -154,11 +155,12 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
                         show_notification("Disconnected");
                         openvpn_killed = true;
                     }
-
-                    if !phone_unplugged && !openvpn_killed && !online(None).unwrap() {
-                        restart_openvpn();
-                        show_notification("Reconnected");
-                    }
+                }
+            }
+            recv(online_check_ticks) -> _ => {
+                if !paused && !phone_unplugged && !openvpn_killed && !online(None).unwrap() {
+                    restart_openvpn();
+                    show_notification("Reconnected");
                 }
             }
         }
