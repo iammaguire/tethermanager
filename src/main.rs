@@ -160,7 +160,7 @@ fn start_timer(context: &libusb::Context, phone_vendor_id: u16, phone_product_id
             recv(online_check_ticks) -> _ => {
                 if !paused && !phone_unplugged && !openvpn_killed && !online(None).unwrap() {
                     restart_openvpn();
-                    show_notification("Reconnected");
+                    show_notification("Attempting reconnect");
                 }
             }
         }
